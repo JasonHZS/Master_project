@@ -1,0 +1,201 @@
+---
+title: "Working_Hours_analysis"
+author: "Zesen Huang, Yinxia Shen, Jiani Wu"
+date: "2021/4/30"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data describe
+
+This subject is about studying what factors related to working hours in different countries. The data comes from Our World in Data(https://ourworldindata.org/working-hours). Two copies of the initial data were downloaded from the site, which are the annual work duration against GDP, annual working duration against productivity.
+The sizes and dimensions of the two data sets are shown below.
+```{r Data describe}
+data_gdp <- read.csv('gdppercapita-vs-annual-hours-worked.csv')
+data_produc <- read.csv('productivity-vs-annual-hours-worked.csv')
+```
+
+```{r Data describe1}
+dim(data_gdp)
+dim(data_produc)
+colnames(data_gdp)
+colnames(data_produc)
+```
+
+## Data preprocessing
+
+Remove data with null values, since we do not need "Code" variable, so it is deleted in both two data sets. Then in the working duration against productivity data set, we only need "Entity", "Year", "Productivity" three columns to left-join the working duration against GDP data, so we delete the rest of the columns.
+Next, we have chosen data greater than the year of 2015, and then for convenience, we modify the column name, and finally do the operation of left-joining by "Entity" and "Year".
+
+```{r process data}
+# Deletes rows with empty values
+data_gdp <- na.omit(data_gdp)
+data_produc <- na.omit(data_produc)
+
+# Select data with Year greater than or equal to 2010
+data_gdp <- data_gdp[which(data_gdp$Year >= '2010'), ]
+data_gdp_Continent <- data_gdp[which(data_gdp$Year== '2015'), -c(2,3,4,5,6)]
+
+data_produc <- data_produc[which(data_produc$Year >= '2010'), ]
+
+# Remove the last column 'Continent'
+data_gdp <- data_gdp[,-c(2,7)]
+data_produc <- data_produc[,-c(2, 4, 6, 7)]
+
+# Modify the column name
+names(data_gdp)<-c("Entity","Year", "Average annual working hours", "GDP", "Population")
+names(data_produc)<-c("Entity", "Year", "Productivity")
+
+# Left join
+data_gdp <- merge(data_gdp, data_gdp_Continent, all.x = TRUE, by='Entity')
+data <- merge(data_gdp, data_produc, all.x = TRUE, by=c('Entity', 'Year'))
+
+#reorder the columns
+col <- colnames(data)
+new_col <- c(col[3],col[4:5],col[7],col[6],col[2])
+data <- data[,new_col]
+colnames(data)
+```
+## Overview of data
+
+```{r summary, echo=FALSE}
+attach(data)
+y <- data$`Average annual working hours`
+summary(data)
+```
+
+There are 5 independent variables in the data finally processed, among which GDP, productivity and population are continuous variables, while continent and Year are category variables.   
+
+Use boxplot to see the distribution of category variables.
+```{r boxplot of Year, echo=FALSE}
+boxplot(y~Year, col="cyan", cex.axis=0.8)
+boxplot(y~Continent, col="cyan", cex.axis=0.8)
+```   
+
+It can be seen from the figure that Year has little influence on working hours, so we can regard these data as the data of the same time period and delete the variable Year.
+The distribution of working hours in continent variable is significantly different, so we need to take it into account when building the model in the future.
+
+
+Check the distribution of continuity variables using a scatter plot.
+```{r origin data plot, echo=FALSE}
+plot(data$`GDP`, y, xlab = 'GDP', ylab = 'Average annual hours worked by persons engaged')
+plot(data$`Population`, y, xlab = 'Total population', ylab = 'Average annual hours worked by persons engaged')
+plot(data$`Productivity`, y, xlab = 'Productivity', ylab = 'Average annual hours worked by persons engaged')
+```
+
+## Data analysis
+
+Calculate correlation coefficient of continuity variables
+
+```{r correlation plot, echo=FALSE}
+round(cor(data[,c(1,2:4)]),2)
+
+# plot cor
+panel.hist <- function(x, ...)
+{
+  usr <- par("usr"); on.exit(par(usr))
+  par(usr = c(usr[1:2], 0, 1.5) )
+  h <- hist(x, plot = FALSE)
+  breaks <- h$breaks; nB <- length(breaks)
+  y <- h$counts; y <- y/max(y)
+  rect(breaks[-nB], 0, breaks[-1], y, col = "cyan", ...)
+}
+
+pairs(data[,c(1,2:4)], diag.panel = panel.hist)
+```
+
+It can be seen from the correlation coefficient that working hours is negatively correlated with GDP and Productivity, which is higher than GDP. There is a positive correlation between working hours and population, but the correlation is small. Among them, the correlation coefficient between GDP and Productivity is large, which is 0.86, indicating that the variable has multicollinearity.
+
+## Building linear model
+### Parameter estimation for all variables.
+```{r build linear model}
+## Building multiple varilinear model
+reg.out <- lm(y~GDP+Productivity+Population+Year+Continent)
+summary(reg.out)
+plot(reg.out)
+```
+
+According to the LM model that the p-value of year is large, which is consistent with the previous analysis, so this variable is considered to be deleted. In the correlation coefficient figure, it can be seen that GDP and Productivity are negatively correlated with working hours respectively. However, in the regression, the coefficient of GDP is positive, indicating that the model is incorrect.   
+On the other hand, if the points in a residual plot are randomly dispersed around the
+horizontal axis, a linear regression model is appropriate for the data. Otherwise, the regression plot can be used to detect problems with the formulated regression model. In this case, the residual plot exhibits a slight U-shape, which provides a indication of non-linearity in the data.
+
+
+### Exploit Lasso regression to deal with multicollinearity.
+
+Set dummy variables for Continent.
+```{r}
+library(misty)
+dummy_continent <- dummy.c(data$Continent,ref = "Africa")
+data <- data.frame(data,dummy_continent)
+```
+
+```{r,echo=FALSE}
+set.seed(10)
+library(glmnet)
+# Build up the Lasso regression model
+y <- as.matrix(data[,1])
+x <- as.matrix(data[,c(2:4,7:11)])
+f <- glmnet(x,y,family = "gaussian", alpha=1)
+plot(f, xvar="lambda", label=TRUE)
+#Cross validation gives lambda
+reg.lasso <- cv.glmnet(x,y,family="gaussian",alpha=1,nfolds=10)
+plot(reg.lasso)
+#Take the minimum value of λ
+bestlam <- reg.lasso$lambda.min
+reg.lasso.min <- glmnet(x,y,family="gaussian",alpha=1,lambda=bestlam)
+# summary(reg.lasso.min)
+lasso.coef <- coef(reg.lasso.min)
+lasso.coef <- round(lasso.coef, 3)
+# #Assume take the λ=20
+# reg.lasso20 <- glmnet(x,y,family="gaussian",alpha=1,lambda=20)
+# coef(reg.lasso20)
+```
+
+```{r}
+lasso.coef
+```
+
+Much like best subset selection, the lasso performs variable selection. The lasso yields sparse models — that is, models that involve only a subset of the variables.   
+
+After finding the best λ for the model, from the coefficients above we can see that the coefficient of population can be considered as 0. 
+Then we analyze how the model fits our data.
+
+```{r,echo=FALSE}
+#compute R_square of lasso model
+y_mean = mean(y)
+TSS <- sum((y-y_mean)^2)
+y_hat <- lasso.coef[1]+lasso.coef[2]*data[,2]+lasso.coef[3]*data[,3]+lasso.coef[4]*data[,4]+lasso.coef[5]*data[,7]+lasso.coef[6]*data[,8]+ lasso.coef[7]*data[,9]+lasso.coef[8]*data[,10]+lasso.coef[9]*data[,11]
+ESS <- sum((y_hat-y_mean)^2)
+R_2 <- ESS/TSS
+R_bar_2 <- 1-(1-R_2)*((length(data[,1])-1)/(length(data[,1])-8-1))
+```
+
+Compute $R^2$ of lasso model.     
+```{r}
+R_bar_2
+```
+
+According to the variable selection by lasso regression, we can also reduce Year and population variable in a new lm model to compared with the last one. Because the simpler the model, the stronger the generalization ability.
+```{r build new linear model after lasso}
+reg.out1 <- lm(`Average annual working hours`~GDP+Productivity+Continent)
+summary(reg.out1)
+```
+
+## Conclusion   
+Comparing two models with independent variables GDP, Productivity and Continent, the adjusted $R^2$ of lasso is greater than the one of general linear model. So we choose lasso as our final model.
+
+In our model, Average annual working hours is greatly affected by Productivity and Continent.The effect of GDP on working hours can be ignored since its coefficient is too small. From the coefficients, we can know that when other variables keep same,if Productivity increases and changes by one unit,  Average annual working hours will decrease by about 10 hours. From the categorical variable Continent, we can see that，when another variables keep same, compared with Africa, the difference of Average annual working hours in Asia, Europe, North America, Oceania, and South America are about 126, -97, 102, -61, and -204 hours, respectively.
+So the data tells us that if we increase our productivity, we may spend less time on working. Meanwhile, it tells us that the continent which the country belongs to is also a factor of analyzing working time. Compared with Africa, only Asia and North America have longer working time.   
+
+What can we learn from the data?   
+Work takes up most of people's time these days, and in countries with more advanced economies and higher productivity, such as Europe, people work fewer hours. In Asia and North America, however, people work more hours even though their GDP and productivity are not low, reflecting a greater emphasis on work and a higher proportion of work in people's lives. Why is that? We think the reason may be that in Asia and North America, people are under more competitive pressure.   
+Work is just a part of life. We don't want it to take up too much of your life. Hope that everyone can keep a balance between work and life.
+
+
+
